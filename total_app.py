@@ -189,7 +189,11 @@ def main():
                 
                 if st.button("🚀 발주서 전송하기"):
                     item_info = data[data['상품명'] == item_choice].iloc[0]
-                    now = datetime.datetime.now().strftime('%Y-%m-%d %H:%M')
+                    
+                    # [시간 수정] 서버 위치와 상관없이 한국 표준시(KST)로 강제 고정 (+9시간)
+                    kst = datetime.timezone(datetime.timedelta(hours=9))
+                    now = datetime.datetime.now(kst).strftime('%Y-%m-%d %H:%M')
+                    
                     total_price = int(item_info['단가'] * qty_choice)
                     
                     # 1. DB에 주문 저장
