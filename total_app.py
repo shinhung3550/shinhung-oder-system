@@ -5,8 +5,6 @@ import datetime
 import requests
 
 # --- 1. 설정 및 데이터베이스 초기화 ---
-
-# 제공해주신 텔레그램 정보를 코드에 적용했습니다.
 TELEGRAM_TOKEN = '8719449602:AAFSP1W-vdaaIw4fXVSkGEeoG47me-qj9_o' 
 TELEGRAM_CHAT_ID = '8262814335' 
 
@@ -16,7 +14,6 @@ def send_telegram_msg(message):
         url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
         params = {"chat_id": TELEGRAM_CHAT_ID, "text": message}
         try:
-            # 알림 전송 시 프로그램이 멈추지 않도록 타임아웃 5초 설정
             requests.get(url, params=params, timeout=5)
         except Exception as e:
             print(f"텔레그램 전송 실패: {e}")
@@ -26,10 +23,8 @@ def get_connection():
 
 def init_db():
     conn = get_connection()
-    # 거래처 테이블
     conn.execute('''CREATE TABLE IF NOT EXISTS clients 
                     (client_id TEXT PRIMARY KEY, password TEXT, client_name TEXT, target_tier TEXT)''')
-    # 주문 테이블
     conn.execute('''CREATE TABLE IF NOT EXISTS orders (
                         id INTEGER PRIMARY KEY AUTOINCREMENT,
                         order_date TEXT,
@@ -62,16 +57,11 @@ def process_price_excel(file):
     return final_df
 
 def process_client_excel(file):
-    # 모든 데이터를 문자로 읽어 앞자리 '0' 보존 (예: 008040)
     df = pd.read_excel(file, dtype=str)
     df.columns = [str(c).strip() for c in df.columns]
-    
-    # 실제 엑셀 헤더에 맞춰 매핑 ('코드', '상호명', '적용단가')
     col_map = {'코드': 'client_id', '상호명': 'client_name', '적용단가': 'target_tier'}
     available = [c for c in col_map.keys() if c in df.columns]
     client_df = df[available].rename(columns=col_map)
-    
-    # 아이디 정제 (소수점 제거 등 안전장치)
     client_df['client_id'] = client_df['client_id'].apply(lambda x: str(x).split('.')[0].strip())
     client_df['password'] = '1234'
     client_df['client_name'] = client_df['client_name'].str.strip()
@@ -83,7 +73,6 @@ def main():
     st.set_page_config(page_title="자재 발주 시스템", layout="wide")
     init_db()
 
-    # 로그인 세션 초기화 (변수명 충돌 방지)
     if 'is_logged_in' not in st.session_state:
         st.session_state.is_logged_in = False
     if 'user_info' not in st.session_state:
@@ -107,6 +96,16 @@ def main():
                     df_p.to_sql('products', conn, if_exists='replace', index=False)
                     conn.close()
                     st.success("✅ 상품별 단가 정보가 업데이트되었습니다!")
+                    
+                    # [개선] 관리자 화면 단가표 미리보기 콤마(,) 추가
+                    st.write("### 📋 업로드된 단가표 미리보기 (상위 5개)")
+                    preview_df = df_p.head().copy()
+                    price_cols = [c for c in preview_df.columns if c not in ['코드', '상품명', '규격', '단위']]
+                    format_dict = {}
+                    for c in price_cols:
+                        preview_df[c] = pd.to_numeric(preview_df[c], errors='coerce').fillna(0).astype(int)
+                        format_dict[c] = '{:,}원'
+                    st.dataframe(preview_df.style.format(format_dict), use_container_width=True)
 
             with t2:
                 f2 = st.file_uploader("천년경영 '거래처목록' 엑셀", type=["xlsx"], key="admin_c_up")
@@ -124,15 +123,31 @@ def main():
                 try:
                     orders_df = pd.read_sql("SELECT * FROM orders ORDER BY id DESC", conn)
                     if not orders_df.empty:
-                        st.dataframe(orders_df, use_container_width=True)
+                        # 숫자로 형변환
+                        orders_df['price'] = pd.to_numeric(orders_df['price'], errors='coerce').fillna(0).astype(int)
+                        orders_df['qty'] = pd.to_numeric(orders_df['qty'], errors='coerce').fillna(0).astype(int)
+                        orders_df['total'] = pd.to_numeric(orders_df['total'], errors='coerce').fillna(0).astype(int)
+                        
+                        # [개선] 영어로 나오던 테이블 헤더를 한글 명칭으로 직관적으로 변경
+                        display_df = orders_df.rename(columns={
+                            'id': '주문번호', 'order_date': '주문일시', 'client_name': '거래처명',
+                            'item_name': '품목명', 'spec': '규격', 'unit': '단위',
+                            'price': '단가', 'qty': '수량', 'total': '총금액', 'status': '상태'
+                        })
+                        
+                        # [개선] 관리자 주문 내역 표에 금액 콤마(,) 추가
+                        st.dataframe(display_df.style.format({
+                            '단가': '{:,}원', '수량': '{:,}', '총금액': '{:,}원'
+                        }), use_container_width=True)
+                        
                         if st.button("전체 주문 내역 초기화"):
                             conn.execute("DELETE FROM orders")
                             conn.commit()
                             st.rerun()
                     else:
                         st.info("현재 접수된 새로운 주문이 없습니다.")
-                except:
-                    st.error("주문 데이터를 불러오는 중 오류가 발생했습니다.")
+                except Exception as e:
+                    st.error(f"주문 데이터를 불러오는 중 오류가 발생했습니다: {e}")
                 finally:
                     conn.close()
 
@@ -177,7 +192,9 @@ def main():
                 if search:
                     data = data[data['상품명'].str.contains(search, na=False)]
                 
-                st.dataframe(data, use_container_width=True)
+                # [개선] 거래처 화면 단가 조회 표에 금액 콤마(,) 및 '원' 추가
+                data['단가'] = pd.to_numeric(data['단가'], errors='coerce').fillna(0).astype(int)
+                st.dataframe(data.style.format({'단가': '{:,}원'}), use_container_width=True)
                 
                 st.divider()
                 st.subheader("🛒 실시간 발주")
@@ -190,7 +207,6 @@ def main():
                 if st.button("🚀 발주서 전송하기"):
                     item_info = data[data['상품명'] == item_choice].iloc[0]
                     
-                    # [시간 수정] 서버 위치와 상관없이 한국 표준시(KST)로 강제 고정 (+9시간)
                     kst = datetime.timezone(datetime.timedelta(hours=9))
                     now = datetime.datetime.now(kst).strftime('%Y-%m-%d %H:%M')
                     
@@ -214,7 +230,8 @@ def main():
                     )
                     send_telegram_msg(alert_msg)
                     
-                    st.success(f"✅ 주문이 정상 접수되었습니다. (텔레그램 알림 전송 완료)")
+                    # [개선] 완료 알림창에도 총금액을 포맷팅하여 직관성 확보
+                    st.success(f"✅ {item_choice} {qty_choice}개 (총 {total_price:,}원) 주문이 정상 접수되었습니다. (알림 전송 완료)")
                     
             except Exception as e:
                 st.warning("단가표 정보를 불러올 수 없습니다. 관리자 모드에서 파일을 먼저 업로드해주세요.")
