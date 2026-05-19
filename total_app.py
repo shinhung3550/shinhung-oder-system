@@ -64,7 +64,6 @@ def auto_load_git_files():
 
 # --- 2. 관리자 로직 (엑셀 처리) ---
 def process_price_excel(file):
-    # [수정] 상품코드를 문자로 읽어 앞자리 '0'을 완벽하게 보존합니다 (dtype=str)
     df = pd.read_excel(file, header=[0, 1], dtype=str)
     
     new_cols = []
@@ -81,7 +80,6 @@ def process_price_excel(file):
     final_df = df[valid_base + price_cols]
     final_df.columns = [c.replace("_계자값", "").replace("_계산값", "") for c in final_df.columns]
     
-    # 코드 데이터 정제 (소수점 제거 및 공백 제거)
     if '코드' in final_df.columns:
         final_df['코드'] = final_df['코드'].apply(lambda x: str(x).split('.')[0].strip().zfill(6) if pd.notna(x) else "")
         
@@ -94,7 +92,6 @@ def process_client_excel(file):
     available = [c for c in col_map.keys() if c in df.columns]
     client_df = df[available].rename(columns=col_map)
     
-    # 거래처 코드도 앞자리 '0' 보존 (6자리)
     client_df['client_id'] = client_df['client_id'].apply(lambda x: str(x).split('.')[0].strip().zfill(6) if pd.notna(x) else "")
     client_df['password'] = '1234'
     client_df['client_name'] = client_df['client_name'].str.strip()
@@ -173,33 +170,39 @@ def main():
             with t3:
                 st.subheader("🛒 실시간 접수된 주문 목록")
                 conn = get_connection()
+                
+                # [개선] 데이터 유무와 상관없이 UI 구조가 깨지지 않도록 로직을 완전히 분리
                 try:
                     orders_df = pd.read_sql("SELECT * FROM orders ORDER BY id DESC", conn)
-                    if not orders_df.empty:
-                        orders_df['price'] = pd.to_numeric(orders_df['price'], errors='coerce').fillna(0).astype(int)
-                        orders_df['qty'] = pd.to_numeric(orders_df['qty'], errors='coerce').fillna(0).astype(int)
-                        orders_df['total'] = pd.to_numeric(orders_df['total'], errors='coerce').fillna(0).astype(int)
-                        
-                        display_df = orders_df.rename(columns={
-                            'id': '주문번호', 'order_date': '주문일시', 'client_name': '거래처명',
-                            'item_name': '품목명', 'spec': '규격', 'unit': '단위',
-                            'price': '단가', 'qty': '수량', 'total': '총금액', 'status': '상태'
-                        })
-                        
-                        st.dataframe(display_df.style.format({
-                            '단가': '{:,}원', '수량': '{:,}', '총금액': '{:,}원'
-                        }), use_container_width=True)
-                        
-                        if st.button("전체 주문 내역 초기화"):
-                            conn.execute("DELETE FROM orders")
-                            conn.commit()
-                            st.rerun()
-                    else:
-                        st.info("현재 접수된 새로운 주문이 없습니다.")
-                except Exception as e:
-                    st.error(f"주문 데이터를 불러오는 중 오류가 발생했습니다: {e}")
-                finally:
-                    conn.close()
+                except:
+                    orders_df = pd.DataFrame()
+                
+                if not orders_df.empty:
+                    orders_df['price'] = pd.to_numeric(orders_df['price'], errors='coerce').fillna(0).astype(int)
+                    orders_df['qty'] = pd.to_numeric(orders_df['qty'], errors='coerce').fillna(0).astype(int)
+                    orders_df['total'] = pd.to_numeric(orders_df['total'], errors='coerce').fillna(0).astype(int)
+                    
+                    display_df = orders_df.rename(columns={
+                        'id': '주문번호', 'order_date': '주문일시', 'client_name': '거래처명',
+                        'item_name': '품목명', 'spec': '규격', 'unit': '단위',
+                        'price': '단가', 'qty': '수량', 'total': '총금액', 'status': '상태'
+                    })
+                    
+                    st.dataframe(display_df.style.format({
+                        '단가': '{:,}원', '수량': '{:,}', '총금액': '{:,}원'
+                    }), use_container_width=True)
+                else:
+                    st.info("현재 접수된 새로운 주문이 없습니다. 깨끗한 상태입니다.")
+                
+                st.write("")
+                # 주문이 0건이든 많든 상시 초기화가 가능하도록 버튼을 바깥으로 독립
+                if st.button("🗑️ 전체 주문 내역 초기화 (데이터베이스 청소)", type="primary"):
+                    conn.execute("DELETE FROM orders")
+                    conn.commit()
+                    st.success("주문 테이블 초기화 완료!")
+                    st.rerun()
+                
+                conn.close()
 
     # --- 거래처 모드 ---
     else:
@@ -211,7 +214,6 @@ def main():
                 c_pw = st.text_input("비밀번호", type="password").strip()
                 if st.form_submit_button("로그인"):
                     conn = get_connection()
-                    # 6자리 포맷팅 적용하여 정확히 비교
                     formatted_id = c_id.zfill(6)
                     user = pd.read_sql(f"SELECT * FROM clients WHERE client_id='{formatted_id}' AND password='{c_pw}'", conn)
                     conn.close()
@@ -238,34 +240,27 @@ def main():
             st.subheader(f"🔍 자재 단가 조회")
             conn = get_connection()
             try:
-                # [개선] 코드 컬럼도 함께 불러옵니다.
                 data = pd.read_sql(f"SELECT 코드, 상품명, 규격, 단위, [{u['tier']}] AS 단가 FROM products", conn)
                 
-                # --- [신규 UI] 모바일 전용 대분류/중분류 대용 퀵 키워드 태그 버튼 ---
                 st.write("📂 **자주 찾는 품목 바로가기**")
                 categories = ["전체보기", "합판", "석고", "MDF", "목재", "단열재", "철물"]
                 
-                # 세션 스테이트를 활용해 버튼 클릭 상태 기억
                 if "selected_category" not in st.session_state:
                     st.session_state.selected_category = "전체보기"
                 
-                # 가로로 버튼 배치
                 cols = st.columns(len(categories))
                 for idx, cat in enumerate(categories):
                     if cols[idx].button(cat, key=f"btn_{cat}", use_container_width=True):
                         st.session_state.selected_category = cat
                 
-                # 버튼 클릭에 따른 1차 필터링
                 if st.session_state.selected_category != "전체보기":
                     data = data[data['상품명'].str.contains(st.session_state.selected_category, na=False)]
                     st.caption(f"📌 '{st.session_state.selected_category}' 검색 결과만 표시 중입니다.")
 
-                # 타이핑 검색창 (2차 상세 필터링)
                 search = st.text_input("원하시는 상품명을 추가로 검색해 보세요 (예: 일반, 9.5T)")
                 if search:
                     data = data[data['상품명'].str.contains(search, na=False)]
                 
-                # 금액 형식화
                 data['단가'] = pd.to_numeric(data['단가'], errors='coerce').fillna(0).astype(int)
                 st.dataframe(data.style.format({'단가': '{:,}원'}), use_container_width=True)
                 
