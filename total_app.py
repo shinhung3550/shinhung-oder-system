@@ -101,6 +101,17 @@ def process_client_excel(file):
 # --- 3. 메인 화면 ---
 def main():
     st.set_page_config(page_title="자재 발주 시스템", layout="wide")
+    
+    # --- [신규 UI] 우측 상단 깃허브 아이콘, 메뉴, 하단 워터마크 완벽 숨기기 ---
+    hide_streamlit_style = """
+            <style>
+            #MainMenu {visibility: hidden;}
+            header {visibility: hidden;}
+            footer {visibility: hidden;}
+            </style>
+            """
+    st.markdown(hide_streamlit_style, unsafe_allow_html=True)
+    
     init_db()
     auto_load_git_files()
 
@@ -113,6 +124,8 @@ def main():
 
     # --- 관리자 모드 ---
     if menu == "관리자 모드":
+        # 관리자 화면에서는 숨김 코드로 인해 상단 여백이 사라지는 것을 방지하기 위해 빈 줄 추가
+        st.write("") 
         st.header("⚙️ 관리자 업무 제어 센터")
         admin_pw = st.text_input("관리자 암호", type="password")
         
@@ -171,7 +184,6 @@ def main():
                 st.subheader("🛒 실시간 접수된 주문 목록")
                 conn = get_connection()
                 
-                # [개선] 데이터 유무와 상관없이 UI 구조가 깨지지 않도록 로직을 완전히 분리
                 try:
                     orders_df = pd.read_sql("SELECT * FROM orders ORDER BY id DESC", conn)
                 except:
@@ -195,7 +207,6 @@ def main():
                     st.info("현재 접수된 새로운 주문이 없습니다. 깨끗한 상태입니다.")
                 
                 st.write("")
-                # 주문이 0건이든 많든 상시 초기화가 가능하도록 버튼을 바깥으로 독립
                 if st.button("🗑️ 전체 주문 내역 초기화 (데이터베이스 청소)", type="primary"):
                     conn.execute("DELETE FROM orders")
                     conn.commit()
@@ -206,6 +217,7 @@ def main():
 
     # --- 거래처 모드 ---
     else:
+        st.write("")
         st.header("🏗️ 거래처 전용 온라인 발주")
         
         if not st.session_state.is_logged_in:
