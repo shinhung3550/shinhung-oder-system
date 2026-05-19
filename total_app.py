@@ -3,6 +3,7 @@ import pandas as pd
 import sqlite3
 import datetime
 import requests
+import os
 
 # --- 1. 설정 및 데이터베이스 초기화 ---
 TELEGRAM_TOKEN = '8719449602:AAFSP1W-vdaaIw4fXVSkGEeoG47me-qj9_o' 
@@ -40,6 +41,34 @@ def init_db():
     conn.commit()
     conn.close()
 
+# --- [신규 기능] 깃허브에 올린 엑셀 파일이 있다면 자동으로 DB에 로드하는 함수 ---
+def auto_load_git_files():
+    conn = get_connection()
+    
+    # 1. 단가표 자동 로드
+    try:
+        # products 테이블이 없거나 데이터가 0개일 때만 실행
+        tables = pd.read_sql("SELECT name FROM sqlite_master WHERE type='table' AND name='products'", conn)
+        if tables.empty or pd.read_sql("SELECT count(*) FROM products", conn).iloc[0, 0] == 0:
+            if os.path.exists('price_list.xlsx'):
+                df_p = process_price_excel('price_list.xlsx')
+                df_p.to_sql('products', conn, if_exists='replace', index=False)
+    except Exception as e:
+        print(f"단가표 자동 로드 실패: {e}")
+
+    # 2. 거래처 목록 자동 로드
+    try:
+        # clients 테이블에 데이터가 0개일 때만 실행 (최초 초기화인 경우)
+        client_count = pd.read_sql("SELECT count(*) FROM clients", conn).iloc[0, 0]
+        if client_count == 0:
+            if os.path.exists('client_list.xlsx'):
+                df_c = process_client_excel('client_list.xlsx')
+                df_c.to_sql('clients', conn, if_exists='replace', index=False)
+    except Exception as e:
+        print(f"거래처 자동 로드 실패: {e}")
+        
+    conn.close()
+
 # --- 2. 관리자 로직 (엑셀 처리) ---
 def process_price_excel(file):
     df = pd.read_excel(file, header=[0, 1])
@@ -72,6 +101,7 @@ def process_client_excel(file):
 def main():
     st.set_page_config(page_title="자재 발주 시스템", layout="wide")
     init_db()
+    auto_load_git_files()  # [신규 부품] 프로그램 시작 시 엑셀 파일 존재하면 자동 파싱
 
     if 'is_logged_in' not in st.session_state:
         st.session_state.is_logged_in = False
@@ -89,33 +119,54 @@ def main():
             t1, t2, t3 = st.tabs(["1. 단가표 업로드", "2. 거래처 업로드", "3. 주문 현황 관리"])
             
             with t1:
-                f1 = st.file_uploader("천년경영 '자재단가' 엑셀", type=["xlsx"], key="admin_p_up")
+                st.info("💡 팁: 'price_list.xlsx' 파일명으로 깃허브에 올려두시면 매번 업로드할 필요 없이 항상 자동 유지됩니다.")
+                f1 = st.file_uploader("천년경영 '자재단가' 엑셀 수동 업로드", type=["xlsx"], key="admin_p_up")
                 if f1 and st.button("단가표 DB 반영"):
                     df_p = process_price_excel(f1)
                     conn = get_connection()
                     df_p.to_sql('products', conn, if_exists='replace', index=False)
                     conn.close()
                     st.success("✅ 상품별 단가 정보가 업데이트되었습니다!")
-                    
-                    # [개선] 관리자 화면 단가표 미리보기 콤마(,) 추가
-                    st.write("### 📋 업로드된 단가표 미리보기 (상위 5개)")
-                    preview_df = df_p.head().copy()
-                    price_cols = [c for c in preview_df.columns if c not in ['코드', '상품명', '규격', '단위']]
-                    format_dict = {}
-                    for c in price_cols:
-                        preview_df[c] = pd.to_numeric(preview_df[c], errors='coerce').fillna(0).astype(int)
-                        format_dict[c] = '{:,}원'
-                    st.dataframe(preview_df.style.format(format_dict), use_container_width=True)
+                
+                # 상시 미리보기 연동
+                conn = get_connection()
+                try:
+                    df_p = pd.read_sql("SELECT * FROM products", conn)
+                    if not df_p.empty:
+                        st.write("### 📋 현재 시스템에 등록된 단가표 (상위 5개)")
+                        preview_df = df_p.head().copy()
+                        price_cols = [c for c in preview_df.columns if c not in ['코드', '상품명', '규격', '단위']]
+                        format_dict = {}
+                        for c in price_cols:
+                            preview_df[c] = pd.to_numeric(preview_df[c], errors='coerce').fillna(0).astype(int)
+                            format_dict[c] = '{:,}원'
+                        st.dataframe(preview_df.style.format(format_dict), use_container_width=True)
+                except:
+                    pass
+                finally:
+                    conn.close()
 
             with t2:
-                f2 = st.file_uploader("천년경영 '거래처목록' 엑셀", type=["xlsx"], key="admin_c_up")
+                st.info("💡 팁: 'client_list.xlsx' 파일명으로 깃허브에 올려두시면 매번 업로드할 필요 없이 항상 자동 유지됩니다.")
+                f2 = st.file_uploader("천년경영 '거래처목록' 엑셀 수동 업로드", type=["xlsx"], key="admin_c_up")
                 if f2 and st.button("거래처 반영"):
                     df_c = process_client_excel(f2)
                     conn = get_connection()
                     df_c.to_sql('clients', conn, if_exists='replace', index=False)
                     conn.close()
                     st.success("✅ 거래처 정보 등록 완료! (초기비번 1234)")
-                    st.dataframe(df_c.head())
+                
+                # 상시 미리보기 연동
+                conn = get_connection()
+                try:
+                    df_c = pd.read_sql("SELECT * FROM clients", conn)
+                    if not df_c.empty:
+                        st.write("### 📋 현재 시스템에 등록된 거래처 정보 (상위 5개)")
+                        st.dataframe(df_c.head(), use_container_width=True)
+                except:
+                    pass
+                finally:
+                    conn.close()
 
             with t3:
                 st.subheader("🛒 실시간 접수된 주문 목록")
@@ -123,19 +174,16 @@ def main():
                 try:
                     orders_df = pd.read_sql("SELECT * FROM orders ORDER BY id DESC", conn)
                     if not orders_df.empty:
-                        # 숫자로 형변환
                         orders_df['price'] = pd.to_numeric(orders_df['price'], errors='coerce').fillna(0).astype(int)
                         orders_df['qty'] = pd.to_numeric(orders_df['qty'], errors='coerce').fillna(0).astype(int)
                         orders_df['total'] = pd.to_numeric(orders_df['total'], errors='coerce').fillna(0).astype(int)
                         
-                        # [개선] 영어로 나오던 테이블 헤더를 한글 명칭으로 직관적으로 변경
                         display_df = orders_df.rename(columns={
                             'id': '주문번호', 'order_date': '주문일시', 'client_name': '거래처명',
                             'item_name': '품목명', 'spec': '규격', 'unit': '단위',
                             'price': '단가', 'qty': '수량', 'total': '총금액', 'status': '상태'
                         })
                         
-                        # [개선] 관리자 주문 내역 표에 금액 콤마(,) 추가
                         st.dataframe(display_df.style.format({
                             '단가': '{:,}원', '수량': '{:,}', '총금액': '{:,}원'
                         }), use_container_width=True)
@@ -183,7 +231,6 @@ def main():
                 st.session_state.user_info = None
                 st.rerun()
 
-            # 단가 조회 및 발주
             st.subheader(f"🔍 자재 단가 조회")
             conn = get_connection()
             try:
@@ -192,7 +239,6 @@ def main():
                 if search:
                     data = data[data['상품명'].str.contains(search, na=False)]
                 
-                # [개선] 거래처 화면 단가 조회 표에 금액 콤마(,) 및 '원' 추가
                 data['단가'] = pd.to_numeric(data['단가'], errors='coerce').fillna(0).astype(int)
                 st.dataframe(data.style.format({'단가': '{:,}원'}), use_container_width=True)
                 
@@ -209,16 +255,13 @@ def main():
                     
                     kst = datetime.timezone(datetime.timedelta(hours=9))
                     now = datetime.datetime.now(kst).strftime('%Y-%m-%d %H:%M')
-                    
                     total_price = int(item_info['단가'] * qty_choice)
                     
-                    # 1. DB에 주문 저장
                     conn.execute("""INSERT INTO orders (order_date, client_name, item_name, spec, unit, price, qty, total) 
                                     VALUES (?, ?, ?, ?, ?, ?, ?, ?)""", 
                                  (now, u['name'], item_choice, item_info['규격'], item_info['단위'], int(item_info['단가']), qty_choice, total_price))
                     conn.commit()
                     
-                    # 2. 텔레그램 알림 발송
                     alert_msg = (
                         f"🔔 [신규 주문 알림]\n"
                         f"- 업체명: {u['name']}\n"
@@ -230,7 +273,6 @@ def main():
                     )
                     send_telegram_msg(alert_msg)
                     
-                    # [개선] 완료 알림창에도 총금액을 포맷팅하여 직관성 확보
                     st.success(f"✅ {item_choice} {qty_choice}개 (총 {total_price:,}원) 주문이 정상 접수되었습니다. (알림 전송 완료)")
                     
             except Exception as e:
